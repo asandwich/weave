@@ -59,11 +59,23 @@ func (conn *LocalConnection) stopForwarders() {
 	conn.forwarderDF.Shutdown()
 }
 
-// Called from peer.Relay[Broadcast] which is itself invoked from
-// router (both UDP listener process and sniffer process). Also called
-// from connection's heartbeat process, and from the connection's TCP
-// receiver process.
-func (conn *LocalConnection) Forward(df bool, frame *ForwardedFrame, dec *EthernetDecoder) error {
+// Called from connection's actor process, and from the connection's
+// TCP receiver process.
+func (conn *LocalConnection) Send(df bool, frameBytes []byte) error {
+	frame := &ForwardedFrame{
+		srcPeer: conn.local,
+		dstPeer: conn.remote,
+		frame:   frameBytes}
+	return conn.forward(frame, nil, df)
+}
+
+// Called from LocalPeer.Relay[Broadcast] which is itself invoked from
+// router (both UDP listener process and sniffer process).
+func (conn *LocalConnection) Forward(frame *ForwardedFrame, dec *EthernetDecoder) error {
+	return conn.forward(frame, dec, dec != nil && dec.DF())
+}
+
+func (conn *LocalConnection) forward(frame *ForwardedFrame, dec *EthernetDecoder, df bool) error {
 	conn.RLock()
 	var (
 		forwarder     = conn.forwarder
@@ -77,6 +89,7 @@ func (conn *LocalConnection) Forward(df bool, frame *ForwardedFrame, dec *Ethern
 		conn.Log("Cannot forward frame yet - awaiting contact")
 		return nil
 	}
+
 	// We could use non-blocking channel sends here, i.e. drop frames
 	// on the floor when the forwarder is busy. This would allow our
 	// caller - the capturing loop in the router - to read frames more
@@ -105,11 +118,11 @@ func (conn *LocalConnection) Forward(df bool, frame *ForwardedFrame, dec *Ethern
 		forwarderDF.Forward(frame)
 		return nil
 	}
-	conn.Router.LogFrame("Fragmenting", frame.frame, &dec.eth)
+	conn.Router.LogFrame("Fragmenting", frame.frame, dec)
 	// We can't trust the stack to fragment, we have IP, and we
 	// have a frame that's too big for the MTU, so we have to
 	// fragment it ourself.
-	return fragment(dec.eth, dec.ip, effectivePMTU, frame, func(segFrame *ForwardedFrame) {
+	return fragment(dec.Eth, dec.IP, effectivePMTU, frame, func(segFrame *ForwardedFrame) {
 		forwarderDF.Forward(segFrame)
 	})
 }
